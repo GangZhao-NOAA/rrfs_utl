@@ -88,6 +88,8 @@ find_package(gsi REQUIRED)
 add_subdirectory(baselib/regional_esg_grid.fd)
 add_subdirectory(baselib)
 
+add_subdirectory(rtma_esg_conversion.fd/esg_lib.fd)
+
 foreach(X IN LISTS SUBLIST)
   if(${${X}})
     string(TOLOWER ${X} x)
