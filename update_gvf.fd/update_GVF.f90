@@ -40,6 +40,7 @@ PROGRAM update_GVF
   real, allocatable :: vegfrc_min(:,:)
   real, allocatable :: field2d(:,:)
   real, allocatable,target :: field2d4br(:,:)
+  real*8, allocatable,target :: field2d8br(:,:)
 !
 !  for grib2
 !
@@ -62,6 +63,8 @@ PROGRAM update_GVF
   real :: vegfrcsmax,vegfrcsmin
   character(256) :: filename_att
 !
+  character(len=32) :: rrfstype,arg
+!
 !**********************************************************************
 !
 !            END OF DECLARATIONS....start of program
@@ -74,6 +77,14 @@ PROGRAM update_GVF
 ! NCEP LSF has to use all cores allocated to run this application 
 ! but this if check can make sure only one core run through the real code.
 if(mype==0) then
+
+  rrfstype='warm'
+  do i = 1, iargc()
+    CALL getarg(i, arg)
+    rrfstype=arg
+  end do
+  WRITE (*,*) 'rrfs background type=',trim(rrfstype)
+
 !
 !========
 !  
@@ -105,14 +116,22 @@ if(mype==0) then
     enddo
     call rrfs%get_var("grid_latt",nx,ny,ylat)
     call rrfs%close()
-    allocate(field2d4br(nx,ny))
+
     allocate(vegfrc_wrf(nx,ny))
     call rrfs%open("sfc_data.nc","r",200)
-    call rrfs%get_var("vfrac",nx,ny,field2d4br)
-    vegfrc_wrf=field2d4br(:,:)*100.0
+    if (trim(rrfstype)=='warm') then
+      allocate(field2d4br(nx,ny))
+      call rrfs%get_var("vfrac",nx,ny,field2d4br)
+      vegfrc_wrf=field2d4br(:,:)*100.0
+      deallocate(field2d4br)
+    else
+      allocate(field2d8br(nx,ny))
+      call rrfs%get_var("vfrac",nx,ny,field2d8br)
+      vegfrc_wrf=field2d8br(:,:)*100.0
+      deallocate(field2d8br)
+    endif
 !    call rrfs%get_att("filename",filename_att)
     call rrfs%close()
-    deallocate(field2d4br)
 ! get date
   !  read(filename_att(9:21),"(I4,2I2,1x,2I2)") ibkyr,ibkmon,ibkday,ibkhh,ibkmm
   else
@@ -323,16 +342,27 @@ if(mype==0) then
 !
 !
   if(bktype==1) then
-    allocate(field2d4br(nx,ny))
     call rrfs%open('sfc_data.nc',"w",200)
-    field2d4br=vegfrc*0.01
-    call rrfs%replace_var("vfrac",nx,ny,field2d4br)
-    field2d4br=vegfrc_max*0.01
-    call rrfs%replace_var("shdmax",nx,ny,field2d4br)
-    field2d4br=vegfrc_min*0.01
-    call rrfs%replace_var("shdmin",nx,ny,field2d4br)
+    if (trim(rrfstype)=='warm') then
+      allocate(field2d4br(nx,ny))
+      field2d4br=vegfrc*0.01
+      call rrfs%replace_var("vfrac",nx,ny,field2d4br)
+      field2d4br=vegfrc_max*0.01
+      call rrfs%replace_var("shdmax",nx,ny,field2d4br)
+      field2d4br=vegfrc_min*0.01
+      call rrfs%replace_var("shdmin",nx,ny,field2d4br)
+      deallocate(field2d4br)
+    else
+      allocate(field2d8br(nx,ny))
+      field2d8br=vegfrc*0.01
+      call rrfs%replace_var("vfrac",nx,ny,field2d8br)
+      field2d8br=vegfrc_max*0.01
+      call rrfs%replace_var("shdmax",nx,ny,field2d8br)
+      field2d8br=vegfrc_min*0.01
+      call rrfs%replace_var("shdmin",nx,ny,field2d8br)
+      deallocate(field2d8br)
+    endif
     call rrfs%close()
-    deallocate(field2d4br)
   else
     filename='wrf_inout'
     write(*,*) 'open file =',trim(filename)
