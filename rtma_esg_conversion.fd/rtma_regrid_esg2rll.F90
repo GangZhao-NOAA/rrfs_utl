@@ -4,7 +4,16 @@ program rtma_regrid_esg2rll
   use netcdf                               ! netcdf lib
   use pkind, only: dp, sp, dpi, spi        ! Jim Purser's lib
   use pietc, only: dtor,rtod               ! Jim Purser's lib
-  use ip_mod                               ! ip lib (for interpolation)
+  use gdswzd_mod, only: gdswzd             ! ip lib (for conversion from earth to grid coor or vice versa)
+!-- required when using iplib v4.0 or higher
+#ifndef IP_V3
+! use ip_mod                               ! ip lib (for interpolation)
+! use ipolates_mod                         ! ip lib (for interpolation)
+! use ip_grid_descriptor_mod
+! use ip_grids_mod
+! use ip_grid_mod
+! use ip_grid_factory_mod
+#endif
   use grib_mod                             ! g2 lib(grib)
   use bacio_module                         ! prerequisite for g2 lib (grib)
   use pbswi, only: abswi2
@@ -15,6 +24,9 @@ program rtma_regrid_esg2rll
                              check_grbmsg, set_rllgridopts,                           &
                              set_bitmap_grb2, check_data_1d_with_bitmap,              &
                              ll_to_xy_esg
+#ifdef IP_V3
+  use mod_rtma_regrid, only: gdt2gds_rll
+#endif
 
   implicit none
 
@@ -65,12 +77,24 @@ program rtma_regrid_esg2rll
 
   real(dp)                :: fill
   integer                 :: nret, iopt
+
+#ifdef IP_V3
+  integer                 :: igdt_grb2(5) 
+  integer                 :: idefnum                 ! The number of entries in array ideflist, i.e. number
+                                                     ! of rows (or columns) for which optional grid points are defined.
+  integer,  allocatable   :: ideflist(:)             ! integer array containing the number of grid points contained in
+                                                     ! each row (or column). To handle the irregular grid stuff.
+  integer                 :: kgds_grb1_rll_o(200)
+  integer                 :: igrid_grb1
+  real(dp), allocatable   :: glat1d_o(:), glon1d_o(:)
+  real(dp), allocatable   :: xpts1d_o(:), ypts1d_o(:)
+#else
+! type(grib2_descriptor)  :: desc_grb2
+! class(ip_grid), allocatable :: ip_grid_rll_o
+#endif
   real(dp), allocatable   :: glat_o(:,:), glon_o(:,:)
   real(dp), allocatable   :: xpts_o(:,:), ypts_o(:,:)
-  real(dp), allocatable   :: crot_o(:,:), srot_o(:,:)
-  real(dp), allocatable   :: xlon_o(:,:), xlat_o(:,:)
-  real(dp), allocatable   :: ylon_o(:,:), ylat_o(:,:)
-  real(dp), allocatable   :: area_o(:,:)
+
 ! real(dp), allocatable   :: slmask_o(:,:)
   real(dp), allocatable   :: data_o(:,:)
   real(dp), allocatable   :: data_fgs_o(:,:)
@@ -235,7 +259,7 @@ program rtma_regrid_esg2rll
 
    if (iret /= 0) then
      write(6,'(1x,A,I4,A)') 'return from sub getgb2: ', iret, ' --> Error: getb2 failed.'
-     stop(iret)
+     stop(1)
    end if
    if ( verbose ) call check_grbmsg(gfld_input)
 
@@ -270,7 +294,7 @@ program rtma_regrid_esg2rll
      write(6,'(1x,A,I12.12)') &
        "output model grid is defined on the grid with grid template number = ",igdtnum_o
      write(6,'(1x,A)') ' However, a Rotated Lat-Lon Grid is expected. So Abort this running ...'
-     stop(igdtnum_o-1)
+     stop(-1)
    end if
 
    igdtlen_o = gfld_input%igdtlen
@@ -304,29 +328,75 @@ program rtma_regrid_esg2rll
 !            to use gdswzd, this type of grid (given igdtnum, igdtmpl)
 !            should be recognizable by gdswzd.
 !---------------------------------------------------------------------------
+   iopt = 0                         ! option used in gdswzd:
+                                    ! 0: calculating grid(i/j) and earth coords (lat/lon) of all grid points
+                                    ! 1: calculating earth coords (lat/lon) of selected grid coordinates
+                                    !-1: calculating grid coordinates of selected earth coords (lat/lon)
+#ifdef IP_V3
+!-- when using iplib v3.0 or lower
+   allocate (xpts1d_o(npts_o),ypts1d_o(npts_o))
+   allocate (glat1d_o(npts_o),glon1d_o(npts_o))
    allocate (xpts_o(imdl_o,jmdl_o),ypts_o(imdl_o,jmdl_o))
    allocate (glat_o(imdl_o,jmdl_o),glon_o(imdl_o,jmdl_o))
-   allocate (crot_o(imdl_o,jmdl_o),srot_o(imdl_o,jmdl_o))
-   allocate (xlon_o(imdl_o,jmdl_o),xlat_o(imdl_o,jmdl_o))
-   allocate (ylon_o(imdl_o,jmdl_o),ylat_o(imdl_o,jmdl_o))
-   allocate (area_o(imdl_o,jmdl_o))
    fill = -9999.0_dp
-   xpts_o = fill ; ypts_o = fill ;  ! Grid x & y point coords
-   glat_o = fill ; glon_o = fill ;  ! Earth lat & lon in degree
-   crot_o = fill ; srot_o = fill ;  ! Vector rotation cosines/sines
-   xlon_o = fill ; xlat_o = fill ;  ! dx/dlon & dx/dlat
-   ylon_o = fill ; ylat_o = fill ;  ! dy/dlon & dy/dlat
-   area_o = fill ;                  ! area weights
+   xpts1d_o = fill ; ypts1d_o = fill ;  ! Grid x & y point coords
+   glat1d_o = fill ; glon1d_o = fill ;  ! Earth lat & lon in degree
+!-------------------------------------------------------------------------------------!
+!    As required by IP lib v3.x or older, gdszwd needs an array gds(200)              !
+!    to save the grid information and parameters, and that array gds(200)             !
+!    follows GRIB1 GDS info. So need to convert grid informaton from                  !
+!    GRIB2 Grid Description Section (and its Grid Definition Template)                !
+!    to GRIB1 GDS info (similarly as decoded by w3fi63)                               !
+!-------------------------------------------------------------------------------------!
+   igdt_grb2(1) = 0         ! Source of Grid Definition (0: then specified in Code Table 3.1)
+   igdt_grb2(2) = npts_o    ! Number of Data Points in the defined grid
+   igdt_grb2(3) = 0         ! Number of octets needed for each additional grid definition (if 0: using regular grid)
+   igdt_grb2(4) = 0         ! Interpetation of list of for optional points definition (Table 3.11)
+   igdt_grb2(5) = igdtnum_o ! GrdDefTmplt number(Table 3.1): 1--> rotated latlon grid (Template 3.1)
+   idefnum     = 0          ! no irregular grid stuff
+   allocate(ideflist(1))
+   ideflist(:) = 0
+   call gdt2gds_rll(igdt_grb2, igdtmpl_o, idefnum, ideflist, kgds_grb1_rll_o, igrid_grb1, iret)
 
-   iopt = 0                         ! calculating earth coords (lat/lon) of all grid points
-   call gdswzd(igdtnum_o, igdtmpl_o, igdtlen_o, iopt, npts_o, fill, xpts_o, ypts_o, glon_o, glat_o, &
-               nret, crot_o, srot_o, xlon_o, xlat_o, ylon_o, ylat_o, area_o)
+!  lrot = 0                             ! return Vector Rotations (if 1)
+!  lmap = 0                             ! return Map Jacobians    (if 1)
+   call gdswzd(kgds_grb1_rll_o, iopt, npts_o, fill,                             &
+!              lrot, lmap,                                                      &  ! not sure if needed for ip lib v3.x
+               xpts1d_o, ypts1d_o, glon1d_o, glat1d_o, nret) 
    if (nret /= npts_o) then
      write(6,'(1x,2(A,1x,I8))') &
            'ERROR: Checking --> NUMBER OF VALID POINTS RETURNED FROM GDSWZS (iopt=0) ',             &
            nret, ' DOES NOT MATCH TOTAL NUMBER of GRID POINTS ', npts_o
      stop(4)
    endif
+!--- reshaping 1-D output array to 2-D array
+   xpts_o = reshape(xpts1d_o, (/imdl_o, jmdl_o/), order=(/1,2/))   
+   ypts_o = reshape(ypts1d_o, (/imdl_o, jmdl_o/), order=(/1,2/))   
+   glat_o = reshape(glat1d_o, (/imdl_o, jmdl_o/), order=(/1,2/))   
+   glon_o = reshape(glon1d_o, (/imdl_o, jmdl_o/), order=(/1,2/))   
+   deallocate(xpts1d_o, ypts1d_o)
+   deallocate(glat1d_o, glon1d_o)
+#else
+!-- when using iplib v4.0 or higher
+   allocate (xpts_o(imdl_o,jmdl_o),ypts_o(imdl_o,jmdl_o))
+   allocate (glat_o(imdl_o,jmdl_o),glon_o(imdl_o,jmdl_o))
+!--- creating the grid info from grib2 template info in grib2 file
+!  allocate (xpts1d_o(npts_o),ypts1d_o(npts_o))
+!  allocate (glat1d_o(npts_o),glon1d_o(npts_o))
+!  desc_grb2 = init_descriptor(igdtnum_o, igdtlen_o, igdtmpl_o)
+!  call init_grid(ip_grid_rll_o, desc_grb2)
+!  call gdswzd(ip_grid_rll_o, iopt, npts_o, fill, xpts1d_o, ypts1d_o,                 &
+!              glon1d_o, glat1d_o, nret) 
+   call gdswzd(igdtnum_o, igdtmpl_o, igdtlen_o, iopt, npts_o, fill, xpts_o, ypts_o,                 &
+               glon_o, glat_o, nret) 
+!              crot_o, srot_o, xlon_o, xlat_o, ylon_o, ylat_o, area_o)  !<-- optional arguments
+   if (nret /= npts_o) then
+     write(6,'(1x,2(A,1x,I8))') &
+           'ERROR: Checking --> NUMBER OF VALID POINTS RETURNED FROM GDSWZS (iopt=0) ',             &
+           nret, ' DOES NOT MATCH TOTAL NUMBER of GRID POINTS ', npts_o
+     stop(4)
+   endif
+#endif
    if ( verbose ) then
      write(6,'(1x,A,4(1x,A1,F8.3,1x,F8.3,A1))')                                                     &
                'LAT/LON   at RLL domain corners (1,1), (1,JM), (IM,1) & (IM,JM): ',                 &
@@ -341,8 +411,6 @@ program rtma_regrid_esg2rll
                '(',xpts_o(imdl_o,1),ypts_o(imdl_o,1), ')',                                          &
                '(',xpts_o(imdl_o,jmdl_o),ypts_o(imdl_o,jmdl_o),')'
    end if
-   deallocate(crot_o, srot_o, xlon_o, xlat_o, ylon_o, ylat_o, area_o)
-   deallocate(xpts_o, ypts_o)
 
 !---------------------------------------------------------------------------
 ! 2. Read information of the output ESG grid in fv3_grid_specification file (netcdf)
@@ -513,6 +581,8 @@ program rtma_regrid_esg2rll
 !   3.2.2 convert lat/lon of rotated-latlon (RLL) grid points (output grid)
 !         to x-y ESG coordinates
 !---------------------------------------------------------------------------
+   if (allocated(xpts_o)) deallocate(xpts_o)
+   if (allocated(ypts_o)) deallocate(ypts_o)
    allocate (xpts_o(imdl_o,jmdl_o),ypts_o(imdl_o,jmdl_o))
    xpts_o = fill; ypts_o = fill;
    call ll_to_xy_esg(ipts_i, jpts_i, imdl_o, jmdl_o, esg_opts, glat_o, glon_o, xpts_o, ypts_o)

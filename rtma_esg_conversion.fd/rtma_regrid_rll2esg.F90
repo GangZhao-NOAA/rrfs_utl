@@ -4,7 +4,12 @@ program rtma_regrid_rll2esg
   use netcdf                               ! netcdf lib
   use pkind, only: dp, sp, dpi, spi        ! Jim Purser's lib
   use pietc, only: dtor,rtod               ! Jim Purser's lib
-  use ip_mod                               ! ip lib (for interpolation)
+! use gdswzd_mod, only: gdswzd             ! ip lib (for conversion from earth to grid coor or vice versa)
+!-- required when using iplib v4.0 or higher
+#ifndef IP_V3
+! use ip_mod                               ! ip lib v4 or above (for interpolation)
+  use ipolates_mod                         ! ip lib v4 or above (for interpolation)
+#endif
   use grib_mod                             ! g2 lib(grib)
   use bacio_module                         ! prerequisite for g2 lib (grib)
   use mod_rtma_regrid, only: rotated_gridopts, variable_options, esg_gridopts
@@ -45,11 +50,11 @@ program rtma_regrid_rll2esg
   integer                 :: npts_i
   logical                 :: unpack
   integer, allocatable    :: ibi(:)
-  logical*1, allocatable  :: input_bitmap(:)        ! 2D Data in 1D slice
-  real(dp), allocatable   :: input_data(:)          ! 2D Data in 1D slice
+  logical*1, allocatable  :: input_bitmap(:,:)      ! 2D array to match ipolates_grib2
+  real(dp), allocatable   :: input_data(:,:)        ! 2D array to match ipolates_grib2
 
   integer                 :: adate(5)               ! year/month/day/hour/minute
-  character(len=12)       :: cdate                  !yyyymmddhhmn
+  character(len=12)       :: cdate                  ! yyyymmddhhmn
 
   integer                 :: km
 
@@ -63,8 +68,8 @@ program rtma_regrid_rll2esg
   integer, allocatable    :: igdtmpl_o(:)
 
   integer, allocatable    :: ibo(:)
-  logical*1, allocatable  :: output_bitmap(:)        ! 2D Data in 1D array
-  real(dp), allocatable   :: output_data(:)          ! 2D Data in 1D array
+  logical*1, allocatable  :: output_bitmap(:,:)      ! 2D array to match ipolates_grib2
+  real(dp), allocatable   :: output_data(:,:)        ! 2D array to match ipolates_grib2
   real(dp), allocatable   :: output_glat(:)          ! 2D Data in 1D array
   real(dp), allocatable   :: output_glon(:)          ! 2D Data in 1D array
 
@@ -207,7 +212,7 @@ program rtma_regrid_rll2esg
 
    if (iret /= 0) then
      write(6,'(1x,A,I4,A)') 'return from sub getgb2: ', iret, ' --> Error: getb2 failed.'
-     stop(iret)
+     stop(2)
    end if
    if ( verbose ) call check_grbmsg(gfld_input)
 
@@ -243,7 +248,7 @@ program rtma_regrid_rll2esg
      write(6,'(1x,A,I12.12)') &
        "input model grid is defined on the grid with grid template number = ",igdtnum_i
      write(6,'(1x,A)') ' However, a Rotated Lat-Lon Grid is expected. So Abort this running ...'
-     stop(igdtnum_i-1)
+     stop(-1)
    end if
 
    igdtlen_i = gfld_input%igdtlen
@@ -254,22 +259,22 @@ program rtma_regrid_rll2esg
 !   1.4 checking up with input model data (and its bitmap, etc.) 
 !---------------------------------------------------------------------------
 !--- input data field decoded in grib2 file
-!  allocate(input_data(npts_i, 1))
-   allocate(input_data(npts_i))
-   input_data(:)           = gfld_input%fld  ! the input data field
+!  allocate(input_data(npts_i))
+   allocate(input_data(npts_i, 1))
+   input_data(:,1)         = gfld_input%fld  ! the input data field
 
 !---  does input data have a bitmap?
    allocate(ibi(1))
-!  allocate(input_bitmap(npts_i, 1))
-   allocate(input_bitmap(npts_i))
+   allocate(input_bitmap(npts_i, 1))
+!  allocate(input_bitmap(npts_i))
    l_clean_bitmap = .False.                  ! do not re-set bitmap to be true everywhere
-   call set_bitmap_grb2(gfld_input,npts_i,l_clean_bitmap,ibi,input_bitmap)
+   call set_bitmap_grb2(gfld_input,npts_i,l_clean_bitmap,ibi,input_bitmap(:,1))
 
 !---  checking if existing any abnormal data values and counting data with false bitmap
    write(6,*)'----------------------------------------------------------'
    write(6,*)'checking the input data read from grib2 fie:'
    write(6,*)'----------------------------------------------------------'
-   call check_data_1d_with_bitmap(var_opts,npts_i,input_data,ibi,input_bitmap)
+   call check_data_1d_with_bitmap(var_opts,npts_i,input_data(:,1),ibi,input_bitmap(:,1))
  
 !---------------------------------------------------------------------------
 ! 2. Read information of the output ESG grid in fv3_grid_specification file (netcdf)
@@ -328,8 +333,8 @@ program rtma_regrid_rll2esg
    allocate (ibo(1))
    allocate (output_glat(mo))
    allocate (output_glon(mo))
-   allocate (output_data(mo))
-   allocate (output_bitmap(mo))
+   allocate (output_data(mo,1))
+   allocate (output_bitmap(mo,1))
 !--- rehsaping 2D array to 1D array required by ipolates
    output_glon = reshape(glon_o, (/npts_o/))
    output_glat = reshape(glat_o, (/npts_o/))
@@ -342,14 +347,14 @@ program rtma_regrid_rll2esg
 !   3.2 call ipolates to interpolate scalar data.
 !       non-zero "iret" indicates a problem.
 !---------------------------------------------------------------------------
-   write(6,*) ' call ipolates_grib2 ... '
-   call ipolates_grib2(ip, ipopt, igdtnum_i, igdtmpl_i, igdtlen_i, &
-                 igdtnum_o, igdtmpl_o, igdtlen_o, &
+   write(6,*) ' call ipolates(==>ipolates_grib2) ... '
+   call ipolates(ip, ipopt, igdtnum_i, igdtmpl_i, igdtlen_i,                 &
+                 igdtnum_o, igdtmpl_o, igdtlen_o,                            &
                  mi, mo, km, ibi, input_bitmap, input_data, no, output_glat, &
                  output_glon, ibo, output_bitmap, output_data, iret)
    if (iret /= 0) then
-     write(6,*) ' ipolates_grib2 failed.'
-     stop(iret)
+     write(6,*) ' ipolates failed.'
+     stop(7)
    else
      write(6,*) ' ipolates_grib2 was done successfully.'
    end if
@@ -389,7 +394,7 @@ program rtma_regrid_rll2esg
 
 !--- reshaping 1-D output array to 2-D array
    allocate(data_o(ipts_o, jpts_o))
-   data_o = reshape(output_data, (/ipts_o, jpts_o/), order=(/1,2/))
+   data_o = reshape(output_data(:,1), (/ipts_o, jpts_o/), order=(/1,2/))
 
 !--- applying some constraints to the regridded variables
    if ( var_opts%varname == "howv" ) then

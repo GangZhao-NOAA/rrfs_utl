@@ -55,6 +55,10 @@ module mod_rtma_regrid
   public :: set_bitmap_grb2
   public :: check_data_1d_with_bitmap
   public :: ll_to_xy_esg
+#ifdef IP_V3
+  public :: gdt2gds_rll
+#endif
+
 !-----------------------------------------------------------------------
 !
 !---- subroutines used in rtma_regrid main code
@@ -390,6 +394,122 @@ module mod_rtma_regrid
         return
       end subroutine ll_to_xy_esg
 !
+#ifdef IP_V3
+      subroutine gdt2gds_rll(igdt, igdtmpl, idefnum, ideflist, kgds, igrid, iret)
+!---    Purpose:
+!         Covnert rotated latlon grid information from a GRIB2 grid tempalte info
+!         to GRIB1 GDS info.  The code is based on subroutine gdt2gds in g2 lib,
+!         which does not process igdt(5)=1, also is refered to subrotuine init_grib1
+!         and init_grib2 in module ip_rot_equid_cylind_grid_mod of ip lib.
+!         Actually, the lat/lon of center grid point in grib1 grid and grib2 grid
+!         are based on init_grib1 and init_grib2. The indices used in gdt2gds.F90
+!         seem to be wrong.
+!         see: https://www.nco.ncep.noaa.gov/pmb/docs/on388/
+!              for GDS, see
+!                https://www.nco.ncep.noaa.gov/pmb/docs/on388/section2.html
+!              for detailed GDS info, see
+!                https://www.nco.ncep.noaa.gov/pmb/docs/on388/tabled.html
+!
+!         iret Error return value:  0: No error.
+!                                   1: Unrecognized GRIB2 GDT number.
+!
+        implicit none
+  
+        integer, intent(in   ) :: idefnum
+        integer, intent(in   ) :: igdt(*), igdtmpl(*), ideflist(*)
+        integer, intent(  out) :: kgds(*), igrid, iret
+
+        integer :: kgds72(200), kgds71(200), idum(200), jdum(200)
+        integer :: ierr, j
+
+        iret = 1
+        idum = 0
+        if (igdt(5) .eq. 1) then            ! Rotated Lat / Lon grid
+          kgds( 1) = 205                     ! Arakawa Staggerred for Non-E Stagger grid
+          kgds( 2) = igdtmpl(8)              ! Ni (IM in init_grib)
+          kgds( 3) = igdtmpl(9)              ! Nj (JM in init_grib)
+          kgds( 4) = igdtmpl(12) * 1.E-3_dp  ! Lat of 1st grid point (in rotated earth lat/lon coordinate) (RLAT1 in init_grib)
+          kgds( 5) = igdtmpl(13) * 1.E-3_dp  ! Lon of 1st grid point (in rotated earth lat/lon coordinate) (RLON1 in init_grib)
+
+          kgds( 6) = 0                       ! resolution and component flags: IROT in init_grib)
+!         if (igdtmpl(1)==2) kgds(6) = 64
+!         if (btest(igdtmpl(14), 4).OR.btest(igdtmpl(14), 5)) kgds(6) = kgds(6) + 128
+!         if (btest(igdtmpl(14), 3)) kgds(6) = kgds(6) + 8
+          kgds( 6) = igdtmpl(14)              ! resolution and component flags: IROT in init_grib)
+
+          kgds( 7) = igdtmpl(20) * 1.E-3_dp  ! Lat of rotated south pole (in original earth lat/lon coor)
+          kgds( 7) = kgds( 7) + 90.0*1.E3_dp ! compute the Lat of rotated center grid point (in original earth lat/lon coor) (RLAT0 in init_grib)
+          kgds( 8) = igdtmpl(21) * 1.E-3_dp   ! Lon of rotated south pole (same as rotated center grid point, in original earth lat/lon coor) (RLON0 in init_grib)
+
+          kgds( 9) = igdtmpl(17) * 1.E-3_dp   ! Di: x-increment, DLONS in init_grib
+          kgds(10) = igdtmpl(18) * 1.E-3_dp   ! Dj: y-increment, DLATS in init_grib
+
+          kgds(11) = igdtmpl(19)              ! Scanning mode (nscan in init_grib)
+
+          kgds(12) = igdtmpl(15) * 1.E-3_dp   ! Lat of last/extreme grid point (in rotated earth lat/lon coor) (RLAT2 in init_grib)
+          kgds(13) = igdtmpl(16) * 1.E-3_dp   ! Lon of last/extreme grid point (in rotated earth lat/lon coor) (RLON2 in init_grib)
+
+
+          kgds(14) = 0
+          kgds(15) = 0
+          kgds(16) = 0
+          kgds(17) = 0
+          kgds(18) = 0
+          kgds(19) = 0
+          kgds(20) = 255
+          kgds(21) = 0
+          kgds(22) = 0
+          iret = 0
+        else
+          write(6,'(1x, A, I5.5)') 'gdt2gds_rll: Unrecognized GRIB2 GDT = 3.', igdt(5)
+          iret = 1
+          kgds(1:22) = 0
+          return
+        endif
+!
+!       Can we determine NCEP grid number ?
+!
+        igrid = 255
+        do j = 254, 1, -1
+          !do j = 225, 225
+          kgds71 = 0
+          kgds72 = 0
+          call w3fi71(j, kgds71, ierr)
+          if (ierr.ne.0) cycle
+          ! convert W to E for longitudes
+          if (kgds71(3) .eq. 0) then    ! lat / lon
+            if (kgds71(7) .lt. 0) kgds71(7) = 360000 + kgds71(7)
+            if (kgds71(10) .lt. 0) kgds71(10) = 360000 + kgds71(10)
+          elseif (kgds71(3) .eq. 1) then    ! mercator
+            if (kgds71(7) .lt. 0) kgds71(7) = 360000 + kgds71(7)
+            if (kgds71(10) .lt. 0) kgds71(10) = 360000 + kgds71(10)
+          elseif (kgds71(3) .eq. 3) then     ! lambert conformal
+            if (kgds71(7) .lt. 0) kgds71(7) = 360000 + kgds71(7)
+            if (kgds71(9) .lt. 0) kgds71(9) = 360000 + kgds71(9)
+            if (kgds71(18) .lt. 0) kgds71(18) = 360000 + kgds71(18)
+          elseif (kgds71(3) .eq. 4) then     ! Guassian lat / lon
+            if (kgds71(7) .lt. 0) kgds71(7) = 360000 + kgds71(7)
+            if (kgds71(10) .lt. 0) kgds71(10) = 360000 + kgds71(10)
+          elseif (kgds71(3) .eq. 5) then     ! polar stereographic
+            if (kgds71(7) .lt. 0) kgds71(7) = 360000 + kgds71(7)
+            if (kgds71(9) .lt. 0) kgds71(9) = 360000 + kgds71(9)
+          endif
+          call r63w72(idum, kgds, jdum, kgds72)
+          if (kgds72(3) .eq. 3) kgds72(14) = 0    ! lambert conformal fix
+          if (kgds72(3) .eq. 1) kgds72(15:18) = 0    ! mercator fix
+          if (kgds72(3) .eq. 5) kgds72(14:18) = 0    ! polar str fix
+          !           print *, ' kgds71(', j, ') =  ',  kgds71(1:30)
+          !           print *, ' kgds72        =  ',  kgds72(1:30)
+          if (all(kgds71 .eq. kgds72) ) then
+             igrid = j
+             exit
+          endif
+        enddo
+        write(6,'(1x,A, I6)') 'sub gdt2gds_rll:: igrid = ', igrid       
+
+        return
+      end subroutine gdt2gds_rll
+#endif
 !-----------------------------------------------------------------------
 !
 !================================================================================
