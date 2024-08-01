@@ -356,12 +356,12 @@ program rtma_regrid_esg2rll
    idefnum     = 0          ! no irregular grid stuff
    allocate(ideflist(1))
    ideflist(:) = 0
-   call gdt2gds_rll(igdt_grb2, igdtmpl_o, idefnum, ideflist, kgds_grb1_rll_o, igrid_grb1, iret)
-
-!  lrot = 0                             ! return Vector Rotations (if 1)
-!  lmap = 0                             ! return Map Jacobians    (if 1)
+   call gdt2gds_rll(igdt_grb2, igdtlen_o, igdtmpl_o, kgds_grb1_rll_o, igrid_grb1, iret)
+   deallocate(ideflist)
+   if ( verbose ) write(6,*) ' checking kgds calculated by gdt2gds_rll : ', kgds_grb1_rll_o
+!  lrot = 0                 ! return Vector Rotations (if 1)
+!  lmap = 0                 ! return Map Jacobians    (if 1)
    call gdswzd(kgds_grb1_rll_o, iopt, npts_o, fill,                             &
-!              lrot, lmap,                                                      &  ! not sure if needed for ip lib v3.x
                xpts1d_o, ypts1d_o, glon1d_o, glat1d_o, nret) 
    if (nret /= npts_o) then
      write(6,'(1x,2(A,1x,I8))') &

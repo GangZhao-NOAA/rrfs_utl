@@ -18,6 +18,9 @@ program rtma_regrid_rll2esg
                              check_grbmsg, set_rllgridopts,                           &
                              set_bitmap_grb2, check_data_1d_with_bitmap,              &
                              ll_to_xy_esg
+#ifdef IP_V3
+  use mod_rtma_regrid, only: gdt2gds_rll
+#endif
 
   implicit none
 
@@ -44,6 +47,21 @@ program rtma_regrid_rll2esg
   integer, allocatable    :: igdtmpl_i(:)
   integer                 :: igdtlen_i
   integer                 :: igdtnum_i
+
+#ifdef IP_V3
+  integer                 :: igdt_grb2(5) 
+  integer                 :: idefnum                 ! The number of entries in array ideflist, i.e. number
+                                                     ! of rows (or columns) for which optional grid points are defined.
+  integer,  allocatable   :: ideflist(:)             ! integer array containing the number of grid points contained in
+                                                     ! each row (or column). To handle the irregular grid stuff.
+  integer                 :: kgds_rll_i(200)         ! grib1 GDS for rotated_latlon grid
+  integer                 :: kgds_esg_o(200)         ! grib1 GDS for esg grid (used in ip lib v3.x and older)
+  integer                 :: igrid_rll_i             ! ncep re-defined grib1 grid number
+#else
+  integer                 :: igdtlen_o
+  integer                 :: igdtnum_o
+  integer, allocatable    :: igdtmpl_o(:)
+#endif
  
   integer                 :: mi
   integer                 :: imdl_i, jmdl_i         ! dimension size read in grib2 data file
@@ -62,10 +80,6 @@ program rtma_regrid_rll2esg
   integer                 :: ipts_o, jpts_o         ! dimension size read in netcdf data file
   integer                 :: ipt2_o, jpt2_o         ! dimension size read in netcdf data file
   integer                 :: npts_o
- 
-  integer                 :: igdtlen_o
-  integer                 :: igdtnum_o
-  integer, allocatable    :: igdtmpl_o(:)
 
   integer, allocatable    :: ibo(:)
   logical*1, allocatable  :: output_bitmap(:,:)      ! 2D array to match ipolates_grib2
@@ -90,6 +104,9 @@ program rtma_regrid_rll2esg
   integer        :: lunin_nml
 
   namelist/setup/varname_input, verbose, l_clean_bitmap
+#ifdef IP_V3
+  external :: ipolates
+#endif
 
 !-----------------------------------------------------------------------
  interface
@@ -276,6 +293,29 @@ program rtma_regrid_rll2esg
    write(6,*)'----------------------------------------------------------'
    call check_data_1d_with_bitmap(var_opts,npts_i,input_data(:,1),ibi,input_bitmap(:,1))
  
+#ifdef IP_V3
+!-------------------------------------------------------------------------------------!
+!   1.5 converting GRIB2 GDT info to GIB1 GDS info for                                !
+!    compatibility backwards with IP lib v3 and older                                 !
+!    As required by IP lib v3.x or older, subroutine ipolates requires grib1 GDS info,!
+!    (in IP lib v4 & above, ipolates works with either grib1 GDS or grib2 GDT info),  !
+!    so need to convert grid informaton from GRIB2 Grid Description Section (GDS) info!
+!    (including its Grid Definition Template) to GRIB1 GDS info                       !
+!    (similarly as decoded by w3fi63)                                                 !
+!-------------------------------------------------------------------------------------!
+   igdt_grb2(1) = 0         ! Source of Grid Definition (0: then specified in Code Table 3.1)
+   igdt_grb2(2) = npts_i    ! Number of Data Points in the defined grid
+   igdt_grb2(3) = 0         ! Number of octets needed for each additional grid definition (if 0: using regular grid)
+   igdt_grb2(4) = 0         ! Interpetation of list of for optional points definition (Table 3.11)
+   igdt_grb2(5) = igdtnum_i ! GrdDefTmplt number(Table 3.1): 1--> rotated latlon grid (Template 3.1)
+   idefnum      = 0         ! no irregular grid stuff
+   allocate(ideflist(1))
+   ideflist(:)  = 0         ! no irregular grid stuff
+   call gdt2gds_rll(igdt_grb2, igdtlen_i, igdtmpl_i, kgds_rll_i, igrid_rll_i, iret)
+   deallocate(ideflist)
+   if ( verbose ) write(6,*) ' checking kgds calculated by gdt2gds_rll : ', kgds_rll_i
+#endif
+
 !---------------------------------------------------------------------------
 ! 2. Read information of the output ESG grid in fv3_grid_specification file (netcdf)
 !---------------------------------------------------------------------------
@@ -321,13 +361,8 @@ program rtma_regrid_rll2esg
 !        number of a negative number. The grid definition template array 
 !        information is not used, so set to a flag value.
 !---------------------------------------------------------------------------
-!   3.1 setup arguments for ipolates_grib2 (scalr interpolation) call
+!   3.1 setup arguments for ipolates (scalar interpolation) call
 !---------------------------------------------------------------------------
-   igdtnum_o = -1 
-   igdtlen_o =  1
-   allocate(igdtmpl_o(igdtlen_o))
-   igdtmpl_o =  -9999
-
    mo = npts_o
    no = mo
    allocate (ibo(1))
@@ -346,17 +381,45 @@ program rtma_regrid_rll2esg
 !---------------------------------------------------------------------------
 !   3.2 call ipolates to interpolate scalar data.
 !       non-zero "iret" indicates a problem.
+!    Note:
+!         the output "grid" is ESG grid, treated as a series of random 
+!         station points in the interpolation with IP lib.
+!         In this case, set the grid definition template 
+!         number of a negative number. The grid definition template array 
+!         information is not used, so set to a flag value.
 !---------------------------------------------------------------------------
-   write(6,*) ' call ipolates(==>ipolates_grib2) ... '
+#ifdef IP_V3
+!-------------------------------------------------------------------------------------!
+!    As required by IP lib v3.x or older, ipolates requires grib1 GDS info,           !
+!-------------------------------------------------------------------------------------!
+!--- ESG grid points are treated as random station points in the interpolation.
+   kgds_esg_o(:) =  0
+   kgds_esg_o(1) = -1       ! KGDSO(1)<0 IMPLIES RANDOM STATION POINTS
+   write(6,*) ' call ipolates with IP lib v3.x and older) ... '
+   call ipolates(ip, ipopt, kgds_rll_i, kgds_esg_o,                          &
+                 mi, mo, km, ibi, input_bitmap, input_data, no, output_glat, &
+                 output_glon, ibo, output_bitmap, output_data, iret)
+#else
+!-------------------------------------------------------------------------------------!
+!    In IP lib v4 and above, ipolates works with either grib1 GDS or grib2 GDT info.  !
+!-------------------------------------------------------------------------------------!
+!--- ESG grid points are treated as random station points in the interpolation.
+   igdtnum_o = -1           ! set the grid definition template number of a negative number
+   igdtlen_o =  1
+   allocate(igdtmpl_o(igdtlen_o))
+   igdtmpl_o =  -9999       ! grid definition template array info is not use, set to a flag value.
+   write(6,*) ' call ipolates(==>ipolates_grib2 with IP lib v4.x and above) ... '
    call ipolates(ip, ipopt, igdtnum_i, igdtmpl_i, igdtlen_i,                 &
                  igdtnum_o, igdtmpl_o, igdtlen_o,                            &
                  mi, mo, km, ibi, input_bitmap, input_data, no, output_glat, &
                  output_glon, ibo, output_bitmap, output_data, iret)
+   deallocate(igdtmpl_o)
+#endif
    if (iret /= 0) then
-     write(6,*) ' ipolates failed.'
+     write(6,'(1x,A,I4,A)') ' ipolates failed with returned value iret = ', iret, '.'
      stop(7)
    else
-     write(6,*) ' ipolates_grib2 was done successfully.'
+     write(6,*) ' ipolates was done successfully.'
    end if
 !---  checking if existing any abnormal data values and counting data with false bitmap
    write(6,*)'----------------------------------------------------------'

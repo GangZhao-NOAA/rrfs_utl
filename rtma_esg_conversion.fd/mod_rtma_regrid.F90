@@ -395,7 +395,7 @@ module mod_rtma_regrid
       end subroutine ll_to_xy_esg
 !
 #ifdef IP_V3
-      subroutine gdt2gds_rll(igdt, igdtmpl, idefnum, ideflist, kgds, igrid, iret)
+      subroutine gdt2gds_rll(igdt, igdtlen, igdtmpl, kgds, igrid, iret)
 !---    Purpose:
 !         Covnert rotated latlon grid information from a GRIB2 grid tempalte info
 !         to GRIB1 GDS info.  The code is based on subroutine gdt2gds in g2 lib,
@@ -410,26 +410,59 @@ module mod_rtma_regrid
 !              for detailed GDS info, see
 !                https://www.nco.ncep.noaa.gov/pmb/docs/on388/tabled.html
 !
+!        Out:
+!         kgds: GRIB1 GDS as described in [NCEPLIBS-w3emc w3fi63() function]
+!               (https://noaa-emc.github.io/NCEPLIBS-w3emc/w3fi63_8f.html).
+!         igrid: NCEP predefined GRIB1 grid number. Set to 255, if not an NCEP grid.
 !         iret Error return value:  0: No error.
 !                                   1: Unrecognized GRIB2 GDT number.
 !
         implicit none
   
-        integer, intent(in   ) :: idefnum
-        integer, intent(in   ) :: igdt(*), igdtmpl(*), ideflist(*)
-        integer, intent(  out) :: kgds(*), igrid, iret
+        integer, intent(in   ) :: igdtlen
+        integer, intent(in   ) :: igdt(5), igdtmpl(igdtlen)
+        integer, intent(  out) :: kgds(200)
+        integer, intent(  out) :: igrid, iret
 
         integer :: kgds72(200), kgds71(200), idum(200), jdum(200)
         integer :: ierr, j
 
+        integer    :: iopt
+        integer    :: iscale, iscale_gb2, iscale_gb1
+        real(dp)   :: lon_sp_rll, lat_sp_rll
+        real(dp)   :: rlon,  rlat            ! earth   lat/lon
+        real(dp)   :: rlonr, rlatr           ! rotated lat/lon
+
+        external :: w3fi71, r63w72
+
         iret = 1
         idum = 0
-        if (igdt(5) .eq. 1) then            ! Rotated Lat / Lon grid
-          kgds( 1) = 205                     ! Arakawa Staggerred for Non-E Stagger grid
+        kgds(1:200) = 0
+        if (igdt(5) .eq. 1) then             ! grid number = 1  (in grib2) for Rotated Lat / Lon grid
+          kgds( 1) = 205                     ! grid number =205 (in grib1) for Arakawa Staggerred for Non-E Stagger grid
           kgds( 2) = igdtmpl(8)              ! Ni (IM in init_grib)
           kgds( 3) = igdtmpl(9)              ! Nj (JM in init_grib)
-          kgds( 4) = igdtmpl(12) * 1.E-3_dp  ! Lat of 1st grid point (in rotated earth lat/lon coordinate) (RLAT1 in init_grib)
-          kgds( 5) = igdtmpl(13) * 1.E-3_dp  ! Lon of 1st grid point (in rotated earth lat/lon coordinate) (RLON1 in init_grib)
+          iscale = igdtmpl(10) * igdtmpl(11)
+          if ( iscale == 0 ) then
+            iscale_gb2 = 10**6
+            iscale_gb1 = 10**3
+          else
+            write(6,'(1x,A,1x,I6.6)') &
+                 'gdt2gds_rll::Abort ==> due to Not recognized iscale from grib2 GDT info: iscale= ', iscale
+            stop(11)
+          end if
+          lat_sp_rll = real(igdtmpl(20), dp)/real(iscale_gb2, dp)  ! latitude  of rotated south pole
+          lon_sp_rll = real(igdtmpl(21), dp)/real(iscale_gb2, dp)  ! longitude of rotated south pole
+!---      first grid point: converting rotated lat/lon (in grib2 gdt) to regular earth lat/lon (for grib1 gds)
+          iopt = -1                          ! rotated lat/lon --> regular earth lat/lon
+          rlatr = real(igdtmpl(12), dp)/real(iscale_gb2, dp)  ! latitude  of 1st grid point (rotated value in grib2 GDT)
+          rlonr = real(igdtmpl(13), dp)/real(iscale_gb2, dp)  ! longitude of 1st grid point (rotated value in grib2 GDT)
+          call rll_trans_iplib(lon_sp_rll, lat_sp_rll, iopt, rlonr, rlatr, rlon, rlat)
+          write(6,'(1x,2(A,2(1x,F18.9)))') 'gdt2gds_rll::rotated lat lon : ',   &
+                rlatr, rlonr, ' (iplib) ==> earth lat lon : ', rlat,  rlon
+          kgds( 4) = nint(rlat * real(iscale_gb1, dp)) ! Lat of 1st grid point (earth lat/lon coordinate; RLAT1 in init_grib)
+          if ( rlon < 0.0 ) rlon = rlon + 360.0_dp
+          kgds( 5) = nint(rlon * real(iscale_gb1, dp)) ! Lon of 1st grid point (earth lat/lon coordinate; RLON1 in init_grib)
 
           kgds( 6) = 0                       ! resolution and component flags: IROT in init_grib)
 !         if (igdtmpl(1)==2) kgds(6) = 64
@@ -437,18 +470,24 @@ module mod_rtma_regrid
 !         if (btest(igdtmpl(14), 3)) kgds(6) = kgds(6) + 8
           kgds( 6) = igdtmpl(14)              ! resolution and component flags: IROT in init_grib)
 
-          kgds( 7) = igdtmpl(20) * 1.E-3_dp  ! Lat of rotated south pole (in original earth lat/lon coor)
-          kgds( 7) = kgds( 7) + 90.0*1.E3_dp ! compute the Lat of rotated center grid point (in original earth lat/lon coor) (RLAT0 in init_grib)
-          kgds( 8) = igdtmpl(21) * 1.E-3_dp   ! Lon of rotated south pole (same as rotated center grid point, in original earth lat/lon coor) (RLON0 in init_grib)
+          kgds( 7) = (lat_sp_rll + 90.0_dp) * real(iscale_gb1, dp) ! Earth Latitude  of rotated center point (rotated south pole lat + 90.0;  RLAT0 in init_grib)
+          kgds( 8) = lon_sp_rll * real(iscale_gb1, dp)          ! Earth Longitude of rotated center point (=rotated south pole lon;  RLON0 in init_grib)
 
-          kgds( 9) = igdtmpl(17) * 1.E-3_dp   ! Di: x-increment, DLONS in init_grib
-          kgds(10) = igdtmpl(18) * 1.E-3_dp   ! Dj: y-increment, DLATS in init_grib
+          kgds( 9) = real(igdtmpl(17), dp)/real(iscale_gb1, dp)   ! Di: x-increment, DLONS in init_grib
+          kgds(10) = real(igdtmpl(18), dp)/real(iscale_gb1, dp)   ! Dj: y-increment, DLATS in init_grib
 
           kgds(11) = igdtmpl(19)              ! Scanning mode (nscan in init_grib)
 
-          kgds(12) = igdtmpl(15) * 1.E-3_dp   ! Lat of last/extreme grid point (in rotated earth lat/lon coor) (RLAT2 in init_grib)
-          kgds(13) = igdtmpl(16) * 1.E-3_dp   ! Lon of last/extreme grid point (in rotated earth lat/lon coor) (RLON2 in init_grib)
-
+!---      last grid point: converting rotated lat/lon (in grib2 gdt) to regular earth lat/lon (for grib1 gds)
+          iopt = -1                          ! rotated lat/lon --> regular earth lat/lon
+          rlatr = real(igdtmpl(15), dp)/real(iscale_gb2, dp)  ! latitude  of last grid point (rotated value in grib2 GDT)
+          rlonr = real(igdtmpl(16), dp)/real(iscale_gb2, dp)  ! longitude of last grid point (rotated value in grib2 GDT)
+          call rll_trans_iplib(lon_sp_rll, lat_sp_rll, iopt, rlonr, rlatr, rlon, rlat)
+          write(6,'(1x,2(A,2(1x,F18.9)))') 'gds2gds_rll: rotated lat lon : ',   &
+                rlatr, rlonr, ' (iplib) ==> earth lat lon : ', rlat,  rlon
+          kgds(12) = nint(rlat * real(iscale_gb1, dp)) ! Lat of last grid point (earth lat/lon coordinate) (RLAT2 in init_grib)
+          if ( rlon < 0.0 ) rlon = rlon + 360.0_dp
+          kgds(13) = nint(rlon * real(iscale_gb1, dp)) ! Lon of last grid point (earth lat/lon coordinate) (RLON2 in init_grib)
 
           kgds(14) = 0
           kgds(15) = 0
@@ -505,10 +544,120 @@ module mod_rtma_regrid
              exit
           endif
         enddo
-        write(6,'(1x,A, I6)') 'sub gdt2gds_rll:: igrid = ', igrid       
+        write(6,'(1x,A,I6)') 'sub gdt2gds_rll:: igrid = ', igrid
 
         return
       end subroutine gdt2gds_rll
+!-----------------------------------------------------------------------
+      subroutine rll_trans_iplib(lon_sp_rll, lat_sp_rll, iopt, lon_in, lat_in, lon_out, lat_out)
+!       purpose:
+!         conversion between the earth latitude/longitude and the rotated latitude/longitude.
+!           iopt =  1: converting earth lat/lon to rotated lat/lon
+!           iopt = -1: converting rotated lat/lon to earth lat/lon
+!       notes:
+!         the algorithm used to do the conversion between rotated latlon and regular earth latlon
+!         is based on the code in SUBROUTINE GDSWZD_ROT_EQUID_CYLIND of ip_rot_equid_cylind_grid_mod.F90
+!         in IP lib verson 4.3.0
+!
+        implicit none
+!---- parameters
+        real(dp),    parameter :: PI = dacos(-1.0_dp)
+        real(dp),    parameter :: D2R = PI/180.0_dp    ! degree ==> radian
+        real(dp),    parameter :: R2D = 180.0_dp/PI    ! radian ==> degree
+
+        real(dp),    intent(in   ) :: lon_sp_rll    ! earth longitude of south pole after rotated (un
+        real(dp),    intent(in   ) :: lat_sp_rll    ! latitude  of input (unit: deg)
+        real(dp),    intent(in   ) :: lon_in        ! longitude of input (unit: deg)
+        real(dp),    intent(in   ) :: lat_in        ! latitude  of input (unit: deg)
+        integer,     intent(in   ) :: iopt          ! option to control the directon of transform
+                                                    !   = 1 : regular lat/lon to rotated lat/lon
+                                                    !   =-1 : rotated lat/lon to regular lat/lon
+
+        real(dp),    intent(  out) :: lon_out       ! longitude of output (unit: deg)
+        real(dp),    intent(  out) :: lat_out       ! latitude  of output (unit: deg)
+
+!---- local variables
+        REAL(DP) :: RLAT0, RLON0   ! latitude/longitude of center point
+        REAL(DP) :: CLAT0, SLAT0   ! SIN/COS of latitude of center point
+        REAL(DP) :: RLAT,  RLON    ! earth latitude/longitude
+        REAL(DP) :: SLAT,  CLAT,  CLON
+        REAL(DP) :: RLATR, RLONR   ! earth latitude/longitude
+        REAL(DP) :: SLATR, CLATR, CLONR
+        REAL(DP) :: HS
+!-----------------------------------------------------------------------------!
+!---- center point
+        RLAT0=lat_sp_rll+90.0_dp        ! center point latitude =  south pole lat + 90
+        RLON0=lon_sp_rll                ! center point longitude = south pole lon
+        IF ( RLON0 < 0.0_dp ) RLON0=RLON0+360.0_dp
+        CLAT0=COS(RLAT0*D2R)
+        SLAT0=SIN(RLAT0*D2R)
+
+        IF ( IOPT == 1 ) THEN           ! IOPT=1: Earth lat/lon ==> Rotated lat/lon
+            RLAT=lat_in
+            RLON=lon_in
+            IF ( RLON < 0.0_dp ) RLON=RLON+360.0_dp
+            HS=SIGN(1._dp,MOD(RLON-RLON0+180._dp+3600._dp,360._dp)-180._dp)
+            CLON=COS((RLON-RLON0)*D2R)
+            SLAT=SIN(RLAT*D2R)
+            CLAT=COS(RLAT*D2R)
+            SLATR=CLAT0*SLAT-SLAT0*CLAT*CLON
+            IF(SLATR.LE.-1) THEN
+                CLATR=0._dp
+                RLONR=0.
+                RLATR=-90.
+            ELSEIF(SLATR.GE.1) THEN
+                CLATR=0._dp
+                RLONR=0.
+                RLATR=90.
+            ELSE
+                CLATR=SQRT(1-SLATR**2)
+                CLONR=(CLAT0*CLAT*CLON+SLAT0*SLAT)/CLATR
+                CLONR=MIN(MAX(CLONR,-1._dp),1._dp)
+                RLONR=HS*R2D*ACOS(CLONR)
+                RLATR=R2D*ASIN(SLATR)
+            ENDIF
+            lat_out=RLATR
+            lon_out=RLONR
+        ELSEIF ( IOPT == -1 ) THEN      ! IOPT=-1: Rotated lat/lon ==> Earth lat/lon
+            RLATR=lat_in
+            RLONR=lon_in
+            IF(RLONR > 180.0_dp) RLONR=RLONR-360.0_dp    ! in range (-180.0, 180.0)
+            IF(RLONR <= 0._dp) THEN
+               HS=-1.0_dp
+            ELSE
+               HS=1.0_dp
+            ENDIF
+            CLONR=DCOS(RLONR*D2R)
+            SLATR=DSIN(RLATR*D2R)
+            CLATR=DCOS(RLATR*D2R)
+            SLAT=CLAT0*SLATR+SLAT0*CLATR*CLONR
+            IF(SLAT.LE.-1._DP) THEN
+                CLAT=0._DP
+                CLON=DCOS(RLON0*D2R)
+                RLON=0._DP
+                RLAT=-90._DP
+            ELSEIF(SLAT.GE.1) THEN
+                CLAT=0._DP
+                CLON=DCOS(RLON0*D2R)
+                RLON=0._DP
+                RLAT=90._DP
+            ELSE
+                CLAT=SQRT(1._DP-SLAT**2)
+                CLON=(CLAT0*CLATR*CLONR-SLAT0*SLATR)/CLAT
+                CLON=MIN(MAX(CLON,-1._dp),1._dp)
+                RLON=REAL(MOD(RLON0+HS*R2D*DACOS(CLON)+3600._DP,360._dp))
+                RLAT=REAL(R2D*DASIN(SLAT))
+            ENDIF
+            lat_out=RLAT
+            lon_out=RLON
+         ELSE
+             WRITE(6,*) ' unrecognized option for opt, which must be either for regular to rotated (iopt=1) or vice versa (iopt=-1) '
+             STOP 999
+         ENDIF
+
+         RETURN
+!-----------------------------------------------------------------------
+      end subroutine rll_trans_iplib
 #endif
 !-----------------------------------------------------------------------
 !

@@ -10,7 +10,6 @@ target_link_libraries(rtma_regrid_rll2esg.exe PRIVATE ${PROJECT_NAME}::pesglib2
                                               PRIVATE ip::ip_d
                                               PRIVATE sp::sp_d
                                               PRIVATE w3emc::w3emc_4
-                                              PRIVATE w3nco::w3nco_4
                                               PRIVATE NetCDF::NetCDF_Fortran
                                               PRIVATE MPI::MPI_Fortran)
 if(OpenMP_Fortran_FOUND)
@@ -30,7 +29,6 @@ target_link_libraries(rtma_regrid_esg2rll.exe PRIVATE ${PROJECT_NAME}::pesglib2
                                               PRIVATE ip::ip_d
                                               PRIVATE sp::sp_d
                                               PRIVATE w3emc::w3emc_4
-                                              PRIVATE w3nco::w3nco_4
                                               PRIVATE NetCDF::NetCDF_Fortran
                                               PRIVATE MPI::MPI_Fortran)
 if(OpenMP_Fortran_FOUND)
