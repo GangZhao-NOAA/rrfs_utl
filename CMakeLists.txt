@@ -49,6 +49,7 @@ list(APPEND SUBLIST "PM")
 list(APPEND SUBLIST "RADMON")
 list(APPEND SUBLIST "REF2TTEN")
 list(APPEND SUBLIST "RTMA_MINMAXTRH")
+list(APPEND SUBLIST "RTMA_ESG_CONVERSION")
 list(APPEND SUBLIST "UPDATE_BC")
 list(APPEND SUBLIST "UPDATE_GVF")
 list(APPEND SUBLIST "UPDATE_ICE")
@@ -85,6 +86,8 @@ find_package(gsi REQUIRED)
 
 add_subdirectory(baselib/regional_esg_grid.fd)
 add_subdirectory(baselib)
+
+add_subdirectory(rtma_esg_conversion.fd/esg_lib.fd)
 
 foreach(X IN LISTS SUBLIST)
   if(${${X}})
